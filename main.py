@@ -2,76 +2,69 @@ import os
 import requests
 import time
 import math
-from datetime import datetime
-from openai import OpenAI
 import telegram
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
+# Your location
 LAT = 0.19626
 LON = 35.07582
-RADIUS_KM = 25
+RADIUS_KM = 25  # Radius in km
+
+# Secrets from Render environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
-client = OpenAI(api_key=OPENAI_API_KEY)
 
-def get_flights():
-    url = f"https://opensky-network.org/api/states/all?lamin={LAT-0.3}&lomin={LON-0.3}&lamax={LAT+0.3}&lomax={LON+0.3}"
+def fetch_planes():
+    url = "https://opensky-network.org/api/states/all"
     try:
-        res = requests.get(url, timeout=10)
-        data = res.json()
-        if not data or not data.get("states"):
-            return []
-        flights = []
-        for f in data["states"]:
-            icao, callsign, country, lat, lon, baro_alt, *_ = f
+        res = requests.get(url, timeout=10).json()
+        states = res.get("states", [])
+        planes = []
+
+        for s in states:
+            callsign = s[1]
+            country  = s[2]
+            lat      = s[6]
+            lon      = s[5]
+
             if lat and lon:
+                # Approximate km distance
                 dist = math.dist([LAT, LON], [lat, lon]) * 111
                 if dist <= RADIUS_KM:
-                    flights.append({
-                        "icao": icao,
+                    planes.append({
                         "callsign": callsign.strip() if callsign else "Unknown",
                         "country": country,
-                        "distance": round(dist, 1)
+                        "dist": round(dist, 1)
                     })
-        return flights
+        return planes
+
     except Exception as e:
         print("Error:", e)
         return []
 
-def generate_trivia(flight):
-    prompt = f"Give me one fun, tweet-length trivia fact about aircraft with callsign {flight['callsign']} (country: {flight['country']}). Be casual and engaging."
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=60,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception:
-        return "Fun fact: this aircraft has quite a story!"
-
-def notify(flight, trivia):
+def notify(plane):
     msg = (
-        f"✈️ Hey, look up!\n"
-        f"That’s flight *{flight['callsign']}* from {flight['country']} about {flight['distance']} km away.\n\n"
-        f"💡 {trivia}"
+        f"✈️ Plane detected near your location!\n\n"
+        f"Flight: {plane['callsign']}\n"
+        f"Country: {plane['country']}\n"
+        f"Distance: {plane['dist']} km"
     )
-    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    bot.send_message(chat_id=CHAT_ID, text=msg)
 
 def main():
-    print("SkySpotter AI is now live 🚀")
-    seen = set()
+    print("✅ SkySpotter AI (Free Version) is running...")
+    sent = set()
+
     while True:
-        flights = get_flights()
-        for f in flights:
-            if f["icao"] not in seen:
-                trivia = generate_trivia(f)
-                notify(f, trivia)
-                seen.add(f["icao"])
-        time.sleep(900)
+        planes = fetch_planes()
+        for p in planes:
+            key = f"{p['callsign']}|{p['country']}|{p['dist']}"
+            if key not in sent:
+                notify(p)
+                sent.add(key)
+
+        time.sleep(900)  # Check every 15 minutes
 
 if __name__ == "__main__":
     main()
